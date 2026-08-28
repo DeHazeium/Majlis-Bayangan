@@ -1,0 +1,45 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "games": {
+      "current": {
+        ".read": "auth != null && auth.token.email === 'YOUR_ADMIN_EMAIL@example.com'",
+        ".write": "auth != null && auth.token.email === 'YOUR_ADMIN_EMAIL@example.com'",
+        "public": {
+          ".read": "auth != null",
+          ".write": "auth != null && auth.token.email === 'YOUR_ADMIN_EMAIL@example.com'"
+        },
+        "players": {
+          ".read": "auth != null && auth.token.email === 'YOUR_ADMIN_EMAIL@example.com'",
+          "$uid": {
+            ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'YOUR_ADMIN_EMAIL@example.com')",
+            ".write": "auth != null && (auth.token.email === 'YOUR_ADMIN_EMAIL@example.com' || (auth.uid === $uid && !data.exists()))",
+            ".validate": "auth.token.email === 'YOUR_ADMIN_EMAIL@example.com' || (newData.hasChildren(['id', 'name', 'table', 'present', 'revealed']) && newData.child('id').val() === auth.uid && newData.child('name').isString() && newData.child('name').val().length > 0 && newData.child('name').val().length <= 80 && newData.child('table').isNumber() && newData.child('table').val() >= 1 && newData.child('table').val() <= 5 && newData.child('present').val() === false && newData.child('revealed').val() === false && !newData.hasChild('role') && !newData.hasChild('faction'))"
+          }
+        },
+        "votes": {
+          "$uid": {
+            ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'YOUR_ADMIN_EMAIL@example.com')",
+            ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'YOUR_ADMIN_EMAIL@example.com')",
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 128"
+          }
+        },
+        "nightActions": {
+          "$uid": {
+            ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'YOUR_ADMIN_EMAIL@example.com')",
+            ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'YOUR_ADMIN_EMAIL@example.com')",
+            ".validate": "newData.hasChildren()"
+          }
+        },
+        "missionClaims": {
+          "$uid": {
+            ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'YOUR_ADMIN_EMAIL@example.com')",
+            ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'YOUR_ADMIN_EMAIL@example.com')",
+            ".validate": "newData.val() === true"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#07080b" />
+    <meta name="description" content="Majlis Bayangan: Protokol Kudeta — live BERLIAN Youth Council dinner game." />
+    <title>Majlis Bayangan: Protokol Kudeta</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="firebase-config.js"></script>
+    <script src="game.js"></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <div class="ambient-grid" aria-hidden="true"></div>
+
+    <header class="site-header">
+      <div class="brand-lockup">
+        <span class="diamond-mark diamond-small" aria-hidden="true"><span>MB</span></span>
+        <div><p>BERLIAN YOUTH COUNCIL</p><h1>MAJLIS BAYANGAN</h1></div>
+      </div>
+      <div class="header-status">
+        <span id="phase-badge" class="badge">REGISTRATION</span>
+        <strong id="phase-clock" class="phase-clock" hidden>00:00</strong>
+        <span id="connection-state" class="connection-state">LOCAL SETUP</span>
+      </div>
+    </header>
+
+    <section id="winner-banner" class="winner-banner" hidden></section>
+
+    <section class="hero-strip">
+      <div>
+        <p id="hero-eyebrow" class="eyebrow">COUNCIL INTAKE</p>
+        <h2 id="hero-title">Registration is open</h2>
+        <p id="hero-description">Register your name and table, then wait for the Overseer to confirm attendance.</p>
+      </div>
+      <div class="protocol-line" aria-label="Game phases">
+        <div id="step-KULIAH" class="protocol-step"><span>01</span><strong>KULIAH</strong></div>
+        <div id="step-KUDETA" class="protocol-step"><span>02</span><strong>KUDETA</strong></div>
+        <div id="step-KONSENSUS" class="protocol-step"><span>03</span><strong>KONSENSUS</strong></div>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <nav class="mode-switch" aria-label="Application mode">
+        <button class="mode-button active" data-tab="participant" type="button">Participant</button>
+        <button class="mode-button" data-tab="overseer" type="button">Overseer</button>
+      </nav>
+      <p id="global-message" class="inline-message" hidden></p>
+      <section id="app-content" aria-live="polite"></section>
+    </main>
+
+    <dialog id="reset-confirm-one" class="dialog-panel">
+      <form method="dialog">
+        <p class="section-kicker">CONFIRMATION 1 OF 2</p>
+        <h2>Are you sure?</h2>
+        <p>This prepares the entire game for deletion. A second confirmation will still be required.</p>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Cancel</button>
+          <button id="continue-reset" class="button danger" value="continue">Yes, continue</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="reset-confirm-two" class="dialog-panel final-dialog">
+      <form method="dialog">
+        <p class="section-kicker">FINAL CONFIRMATION</p>
+        <h2>Permanently reset everything?</h2>
+        <p>Registrations, roles, missions, votes, powers, silenced players and results cannot be recovered.</p>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Keep current game</button>
+          <button id="permanent-reset" class="button danger" value="reset">Yes, permanently reset</button>
+        </div>
+      </form>
+    </dialog>
+
+    <footer><span>MAJLIS BAYANGAN: PROTOKOL KUDETA</span><span>PURE HTML · CSS · JAVASCRIPT</span></footer>
+  </body>
+</html>
