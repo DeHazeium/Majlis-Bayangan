@@ -262,3 +262,5 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
   .login-seal strong { font-size: 22px; }
 }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation: none !important; scroll-behavior: auto !important; } }
+
+
