@@ -15,7 +15,7 @@
   const EMPTY_RESULT = "The Council is awaiting its first decision.";
 
   const phaseCopy = {
-    REGISTRATION: { eyebrow: "Council intake", title: "Registration is open", description: "Register your name and table, then wait for the Overseer to confirm attendance." },
+    REGISTRATION: { eyebrow: "Council intake", title: "Registration is open", description: "Register your name and where you are from, then wait for the Overseer to confirm attendance." },
     KULIAH: { eyebrow: "Normal session", title: "KULIAH is active", description: "Complete your instruction, observe the room and guard your identity." },
     KUDETA: { eyebrow: "Night protocol", title: "KUDETA has begun", description: "Hidden powers are active. Submit your action before the protocol closes." },
     KONSENSUS: { eyebrow: "Council hearing", title: "KONSENSUS is active", description: "Discuss aloud, then cast one private vote before time expires." }
@@ -26,7 +26,7 @@
     phase: "REGISTRATION", round: 1, winner: null, phaseEndsAt: null,
     lastResult: EMPTY_RESULT, votes: {}, nightActions: {}, missionClaims: {},
     selectedPlayerId: "", revealedIds: new Set(), session: null,
-    liveConnected: false, adminUnlocked: false, currentTab: "participant",
+    liveConnected: false, lastSyncedAt: null, adminUnlocked: false, currentTab: "participant",
     voteTarget: "", shadowTarget: "", powerTarget: "", message: ""
   };
 
@@ -48,6 +48,22 @@
     return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   }
 
+  function formatSavedTime(timestamp) {
+    if (!timestamp) return "Connecting…";
+    return `Saved ${new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+
+  function friendlyFirebaseError(error, context = "general") {
+    const raw = String((error && error.message) || error || "").replaceAll("_", " ");
+    const code = raw.toUpperCase();
+    if (code.includes("OPERATION NOT ALLOWED")) return context === "overseer" ? "Enable Email/Password in Firebase Authentication first." : "Enable Anonymous sign-in in Firebase Authentication first.";
+    if (code.includes("INVALID LOGIN CREDENTIALS") || code.includes("INVALID PASSWORD") || code.includes("EMAIL NOT FOUND")) return "The Overseer password is incorrect or the Firebase Overseer user has not been created.";
+    if (code.includes("PERMISSION DENIED")) return "Firebase accepted the login, but the Realtime Database rules have not been published correctly.";
+    if (code.includes("TOO MANY ATTEMPTS")) return "Firebase temporarily blocked repeated attempts. Wait a moment, then try again.";
+    if (code.includes("FAILED TO FETCH") || code.includes("NETWORK")) return "Connection interrupted. Check the internet connection and try again.";
+    return raw || "Firebase could not complete the request.";
+  }
+
   function selectedPlayer() {
     return state.players.find((player) => player.id === state.selectedPlayerId) || state.players[0] || null;
   }
@@ -63,7 +79,7 @@
   }
 
   function refreshLocalRoster() {
-    state.publicRoster = state.players.filter((player) => player.present).map(({ id, name, table, status, present }) => ({ id, name, table, status, present }));
+    state.publicRoster = state.players.filter((player) => player.present).map(({ id, name, origin, status, present }) => ({ id, name, origin, status, present }));
   }
 
   function saveLocal() {
@@ -109,7 +125,7 @@
 
   async function signInOverseer(password) {
     const data = await identityRequest("accounts:signInWithPassword", { email: config.adminEmail, password, returnSecureToken: true });
-    return saveSession({ idToken: data.idToken, refreshToken: data.refreshToken, localId: data.localId, email: data.email, expiresAt: Date.now() + Number(data.expiresIn || 3600) * 1000 });
+    return { idToken: data.idToken, refreshToken: data.refreshToken, localId: data.localId, email: data.email, expiresAt: Date.now() + Number(data.expiresIn || 3600) * 1000 };
   }
 
   function isOverseerSession(session) {
@@ -125,7 +141,7 @@
     const data = await response.json();
     if (!response.ok) throw new Error((data.error && data.error.message) || "Firebase session expired.");
     Object.assign(session, { idToken: data.id_token, refreshToken: data.refresh_token, localId: data.user_id, expiresAt: Date.now() + Number(data.expires_in || 3600) * 1000 });
-    return saveSession(session);
+    return isOverseerSession(session) ? session : saveSession(session);
   }
 
   async function dbRequest(path, method = "GET", value) {
@@ -176,6 +192,7 @@
       state.missionClaims = missionClaim ? { [uid]: true } : {};
     }
     state.liveConnected = true;
+    state.lastSyncedAt = Date.now();
     render();
   }
 
@@ -207,7 +224,7 @@
 
   function targetSelect(label, id, candidates, emptyText = "No eligible target") {
     if (!candidates.length) return `<div class="field-group"><label>${esc(label)}</label><div class="empty-state">${esc(emptyText)}</div></div>`;
-    return `<div class="field-group"><label for="${esc(id)}">${esc(label)}</label><select id="${esc(id)}" data-target-select="${esc(id)}"><option value="">Choose participant</option>${candidates.map((candidate) => `<option value="${esc(candidate.id)}">${esc(candidate.name)} · Table ${candidate.table}</option>`).join("")}</select></div>`;
+    return `<div class="field-group"><label for="${esc(id)}">${esc(label)}</label><select id="${esc(id)}" data-target-select="${esc(id)}"><option value="">Choose participant</option>${candidates.map((candidate) => `<option value="${esc(candidate.id)}">${esc(candidate.name)} · ${esc(candidate.origin || "Origin not provided")}</option>`).join("")}</select></div>`;
   }
 
   function renderHeader() {
@@ -241,25 +258,37 @@
   }
 
   function registrationCard(player) {
-    const disabled = state.attendanceLocked || Boolean(player);
-    const tableOptions = G.TABLES.map((number) => `<option value="${number}">Table ${number}</option>`).join("");
     const silenced = silencedRoster();
-    return card("Enter the Council", "One phone registers one participant. Your classified data stays private.", `
+    const silencedList = silenced.length ? `<div class="public-silenced"><strong>SILENCED</strong>${silenced.map((item) => `<span class="badge silenced-badge">${esc(item.name)}</span>`).join("")}</div>` : "";
+    if (player) {
+      return card("Your seat is secured", "This browser is privately linked to your Council identity.", `
+        <div class="device-pass">
+          <div class="device-pass-top"><span class="save-indicator ${state.liveConnected ? "online" : ""}"></span><span>${state.liveConnected ? "AUTO-SAVE ACTIVE" : "RECONNECTING"}</span><strong>${esc(formatSavedTime(state.lastSyncedAt))}</strong></div>
+          <div class="device-player"><div><span>REGISTERED PARTICIPANT</span><h3>${esc(player.name)}</h3></div><b>${esc(player.origin || "ORIGIN NOT PROVIDED")}</b></div>
+          <p>Close the page whenever needed. Return using this same phone and browser—your role, mission and actions will reload automatically.</p>
+        </div>
+        <div class="device-rules"><span>✓ Same phone</span><span>✓ Same browser</span><span>✕ No Incognito</span></div>
+        ${silencedList}
+      `, "Device-linked access");
+    }
+    return card("Enter the Council", "One phone registers one participant. No email or participant password is needed.", `
+      <div class="trust-strip"><span><b>01</b> Register once</span><span><b>02</b> Auto-save</span><span><b>03</b> Return anytime</span></div>
       <form id="registration-form" class="form-stack">
-        <div class="field-group"><label for="participant-name">Full name</label><input id="participant-name" name="name" placeholder="e.g. Muhammad Irfan" ${disabled ? "disabled" : ""} required /></div>
-        <div class="field-group"><label for="participant-table">Table</label><select id="participant-table" name="table" ${disabled ? "disabled" : ""} required><option value="">Choose table</option>${tableOptions}</select></div>
-        <button class="button" ${disabled ? "disabled" : ""}>Register</button>
+        <div class="field-group"><label for="participant-name">Full name</label><input id="participant-name" name="name" placeholder="e.g. Muhammad Irfan" ${state.attendanceLocked ? "disabled" : ""} required /></div>
+        <div class="field-group"><label for="participant-origin">Where are you from?</label><input id="participant-origin" name="origin" placeholder="eg.BERLIAN SARAWAK" maxlength="100" ${state.attendanceLocked ? "disabled" : ""} required /></div>
+        <button class="button button-large" ${state.attendanceLocked ? "disabled" : ""}>Secure my seat</button>
       </form>
-      ${silenced.length ? `<div class="public-silenced"><strong>SILENCED</strong>${silenced.map((item) => `<span class="badge silenced-badge">${esc(item.name)}</span>`).join("")}</div>` : ""}
+      <p class="form-footnote">Your private device session is remembered automatically. Do not use Incognito mode.</p>
+      ${silencedList}
     `, "Participant access");
   }
 
   function roleCard(player) {
     if (!player) return card("Your Council status", "This phone only receives its own classified record.", `<div class="empty-state">Register your name to join the Council.</div>`, "Private identity");
-    const switcher = !firebaseConfigured ? `<div class="field-group"><label>Local participant</label><select data-target-select="player-switch">${state.players.slice().sort((a, b) => a.table - b.table || a.name.localeCompare(b.name)).map((item) => `<option value="${esc(item.id)}" ${item.id === player.id ? "selected" : ""}>${esc(item.name)} · Table ${item.table}</option>`).join("")}</select></div>` : "";
+    const switcher = !firebaseConfigured ? `<div class="field-group"><label>Local participant</label><select data-target-select="player-switch">${state.players.slice().sort((a, b) => String(a.origin || "").localeCompare(String(b.origin || "")) || a.name.localeCompare(b.name)).map((item) => `<option value="${esc(item.id)}" ${item.id === player.id ? "selected" : ""}>${esc(item.name)} · ${esc(item.origin || "Origin not provided")}</option>`).join("")}</select></div>` : "";
     if (!player.present) return card("Your Council status", "Attendance must be confirmed before roles are released.", `${switcher}<div class="status-state"><span class="status-orb"></span><div><strong>Attendance pending</strong><p>The Overseer has not confirmed ${esc(player.name)} yet.</p></div></div>`, "Private identity");
     if (!state.rolesAssigned) return card("Your Council status", "Your attendance is confirmed.", `${switcher}<div class="status-state confirmed"><span class="status-orb"></span><div><strong>Attendance confirmed</strong><p>Wait for the Overseer to randomize all roles.</p></div></div>`, "Private identity");
-    if (!state.revealedIds.has(player.id)) return card("Your Council status", "Keep the screen private while revealing your identity.", `${switcher}<div class="role-back"><span class="diamond-mark"><span>MB</span></span><p>CLASSIFIED IDENTITY</p><h3>${esc(player.name)}</h3><span>Table ${player.table}</span><button class="button danger" data-action="reveal-role">Reveal my role</button></div>`, "Private identity");
+    if (!state.revealedIds.has(player.id)) return card("Your Council status", "Keep the screen private while revealing your identity.", `${switcher}<div class="role-back"><span class="diamond-mark"><span>MB</span></span><p>CLASSIFIED IDENTITY</p><h3>${esc(player.name)}</h3><span>${esc(player.origin || "Origin not provided")}</span><button class="button danger" data-action="reveal-role">Reveal my role</button></div>`, "Private identity");
     const info = G.roleCopy[player.role];
     return card("Your Council status", "Your classified identity and speciality.", `${switcher}<div class="role-reveal ${player.faction === "SHADOW" ? "shadow" : ""}"><div class="role-heading"><div><p class="section-kicker">YOUR CLASSIFIED ROLE</p><h3>${esc(player.role)}</h3></div><span class="badge ${player.status === "SILENCED" ? "silenced-badge" : ""}">${esc(player.status)}</span></div><span class="badge">${esc(info.faction)}</span><p>${esc(info.brief)}</p><div class="power-box"><span>Speciality</span>${esc(info.power)}</div>${player.shadowTeam ? `<div class="team-box"><span>Your Shadow Council</span>${player.shadowTeam.map((member) => esc(member.name)).join(" · ")}</div>` : ""}${player.privateNotice ? `<div class="private-notice"><span>Private intelligence</span>${esc(player.privateNotice)}</div>` : ""}</div>`, "Private identity");
   }
@@ -303,21 +332,25 @@
     return `<article class="card metric"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></article>`;
   }
 
-  function renderBalance() {
-    return G.TABLES.map((table) => {
-      const members = state.players.filter((player) => player.table === table);
+  function renderOrigins() {
+    if (!state.players.length) return `<div class="empty-state">No participant origins collected yet.</div>`;
+    const groups = new Map();
+    state.players.forEach((player) => {
+      const origin = String(player.origin || "Origin not provided").trim();
+      if (!groups.has(origin)) groups.set(origin, []);
+      groups.get(origin).push(player);
+    });
+    return [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([origin, members]) => {
       const present = members.filter((player) => player.present);
-      const active = present.filter((player) => player.status === "ACTIVE");
-      const shadows = active.filter((player) => player.faction === "SHADOW").length;
-      const dots = Array.from({ length: Math.max(present.length, 7) }, (_, index) => `<i class="dot ${state.rolesAssigned && index < shadows ? "shadow" : index < active.length ? "loyal" : index < present.length ? "silenced" : ""}"></i>`).join("");
-      return `<div class="balance-row"><div><strong>Table ${table}</strong><span>${active.length}/${present.length} active</span></div><div class="dots">${dots}</div><span class="badge">${state.rolesAssigned ? `${shadows} active Shadow${shadows === 1 ? "" : "s"}` : `${members.length} registered`}</span></div>`;
+      const dots = members.map((player) => `<i class="dot ${player.present ? player.status === "SILENCED" ? "silenced" : "loyal" : ""}"></i>`).join("");
+      return `<div class="balance-row"><div><strong>${esc(origin)}</strong><span>${present.length}/${members.length} present</span></div><div class="dots">${dots}</div><span class="badge">${members.length} registered</span></div>`;
     }).join("");
   }
 
   function renderRoster() {
     if (!state.players.length) return `<div class="empty-state">No participants registered yet.</div>`;
-    const rows = state.players.slice().sort((a, b) => a.table - b.table || a.name.localeCompare(b.name)).map((player) => `<tr><td><input type="checkbox" data-attendance="${esc(player.id)}" ${player.present ? "checked" : ""} ${state.attendanceLocked ? "disabled" : ""} /></td><td>${esc(player.name)}</td><td>Table ${player.table}</td><td><span class="badge ${player.status === "SILENCED" ? "silenced-badge" : ""}">${player.present ? esc(player.status) : "PENDING"}</span></td><td>${esc(player.role || "Not assigned")}</td><td>${player.powerUsed ? "Used" : player.role && !["AHLI MAJLIS", "MAJLIS BAYANGAN"].includes(player.role) ? "Ready" : "—"}</td></tr>`).join("");
-    return `<div class="table-scroll"><table><thead><tr><th>Present</th><th>Name</th><th>Table</th><th>Status</th><th>Role</th><th>Power</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    const rows = state.players.slice().sort((a, b) => String(a.origin || "").localeCompare(String(b.origin || "")) || a.name.localeCompare(b.name)).map((player) => `<tr><td><input type="checkbox" data-attendance="${esc(player.id)}" ${player.present ? "checked" : ""} ${state.attendanceLocked ? "disabled" : ""} /></td><td>${esc(player.name)}</td><td>${esc(player.origin || "Not provided")}</td><td><span class="badge ${player.status === "SILENCED" ? "silenced-badge" : ""}">${player.present ? esc(player.status) : "PENDING"}</span></td><td>${esc(player.role || "Not assigned")}</td><td>${player.powerUsed ? "Used" : player.role && !["AHLI MAJLIS", "MAJLIS BAYANGAN"].includes(player.role) ? "Ready" : "—"}</td></tr>`).join("");
+    return `<div class="table-scroll"><table><thead><tr><th>Present</th><th>Name</th><th>Where from</th><th>Status</th><th>Role</th><th>Power</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
   function renderAdminControls() {
@@ -328,16 +361,24 @@
     } else if (!state.winner) {
       controls = `<div class="phase-summary"><span>CURRENT PROTOCOL</span><strong>${state.phase}</strong>${state.phaseEndsAt ? `<b>${formatTimer(state.phaseEndsAt - Date.now())}</b>` : ""}</div><div class="phase-buttons"><button class="button ${state.phase === "KULIAH" ? "" : "secondary"}" data-phase="KULIAH">Start KULIAH</button><button class="button ${state.phase === "KUDETA" ? "danger" : "secondary"}" data-phase="KUDETA">Start KUDETA · 3 min</button><button class="button ${state.phase === "KONSENSUS" ? "" : "secondary"}" data-phase="KONSENSUS">Start KONSENSUS · 5 min</button></div>${state.phase === "KUDETA" ? `<button class="button danger" data-action="resolve-night">Resolve KUDETA · ${Object.keys(state.nightActions).length} submitted</button>` : ""}${state.phase === "KONSENSUS" ? `<button class="button danger" data-action="resolve-vote">Close voting · ${Object.keys(state.votes).length} submitted</button>` : ""}`;
     }
-    return `<div class="control-stack">${controls}<div class="result-box"><span>Latest public result</span>${esc(state.lastResult)}</div>${!firebaseConfigured && !state.rolesAssigned ? `<button class="button secondary" data-action="load-demo">Load 35 demo participants</button>` : ""}<div class="danger-zone"><div><strong>Reset complete game</strong><p>Deletes attendance, roles, missions, votes, actions, silences and results.</p></div><button class="button danger" data-action="open-reset">Reset game</button></div></div>`;
+    return `<div class="control-stack">${controls}<div class="result-box"><span>Latest public result</span>${esc(state.lastResult)}</div><div class="export-panel"><div><strong>Participant list</strong><p>Download names, origins and attendance as a CSV file.</p></div><button class="button secondary" data-action="download-participants" ${state.players.length ? "" : "disabled"}>Download list</button></div>${!firebaseConfigured && !state.rolesAssigned ? `<button class="button secondary" data-action="load-demo">Load 35 demo participants</button>` : ""}<div class="danger-zone"><div><strong>Reset complete game</strong><p>Deletes attendance, roles, missions, votes, actions, silences and results.</p></div><button class="button danger" data-action="open-reset">Reset game</button></div></div>`;
   }
 
   function renderOverseer() {
     if (!state.adminUnlocked) {
-      return `<div class="overseer-layout">${card("Overseer sign-in", "Only the Overseer may resolve actions, silence players or reset the game.", `<form id="admin-login-form" class="form-stack"><div class="field-group"><label for="overseer-id">Overseer ID</label><input id="overseer-id" name="id" autocomplete="username" required /></div><div class="field-group"><label for="overseer-password">Password</label><input id="overseer-password" name="password" type="password" autocomplete="current-password" required /></div><button class="button">Unlock Overseer controls</button></form><p style="color:#817a70;font-size:12px">The ID identifies you; Firebase verifies the private password.</p>`, "Restricted control")}</div>`;
+      return `<div class="overseer-layout overseer-gate">${card("Overseer command access", "Control attendance, roles, protocols and game results from one protected panel.", `
+        <div class="login-seal"><span class="diamond-mark diamond-login"><span>MB</span></span><div><span>AUTHORIZED OVERSEER</span><strong>${esc(OVERSEER_NAME)}</strong><small>ID verified automatically</small></div></div>
+        <form id="admin-login-form" class="form-stack login-form">
+          <div class="field-group"><label for="overseer-id">Overseer ID</label><input id="overseer-id" name="id" value="${esc(OVERSEER_NAME)}" autocomplete="username" readonly required /></div>
+          <div class="field-group"><label for="overseer-password">Private password</label><div class="password-control"><input id="overseer-password" name="password" type="password" autocomplete="current-password" placeholder="Enter Firebase password" required /><button type="button" class="password-toggle" data-action="toggle-password" aria-label="Show password">SHOW</button></div></div>
+          <button class="button button-large">Unlock command panel</button>
+        </form>
+        <div class="security-note"><span>PRIVATE ACCESS</span><p>The password is verified by Firebase and is never stored inside this website.</p></div>
+      `, "Restricted control")}</div>`;
     }
     const activeShadows = state.players.filter((player) => player.present && player.status === "ACTIVE" && player.faction === "SHADOW").length;
     const activeCouncil = state.players.filter((player) => player.present && player.status === "ACTIVE" && player.faction === "COUNCIL").length;
-    return `<div class="overseer-layout"><section class="metric-grid">${metric("Present", presentPlayers().length, `Expected around ${G.TARGET_COUNT}`)}${metric("Active Shadows", state.rolesAssigned ? activeShadows : "—", "Win at equality")}${metric("Active Council", state.rolesAssigned ? activeCouncil : "—", "Remove every Shadow")}${metric("Silenced", silencedRoster().length, `Round ${state.round}`)}</section><section class="dashboard-grid">${card("Protocol command", "Only controls in this panel advance or resolve the game.", renderAdminControls(), `Overseer control · ${OVERSEER_NAME}`)}${card("Table status", "Roles are visible here only to the Overseer.", `<div class="table-balance-list">${renderBalance()}</div>`, "Live balance")}</section>${card("Full game roster", "Attendance, roles and power availability.", renderRoster(), "Council registry")}</div>`;
+    return `<div class="overseer-layout"><section class="metric-grid">${metric("Present", presentPlayers().length, `Expected around ${G.TARGET_COUNT}`)}${metric("Active Shadows", state.rolesAssigned ? activeShadows : "—", `${G.SHADOW_COUNT} assigned initially`)}${metric("Active Council", state.rolesAssigned ? activeCouncil : "—", "Remove every Shadow")}${metric("Silenced", silencedRoster().length, `Round ${state.round}`)}</section><section class="dashboard-grid">${card("Protocol command", "Only controls in this panel advance or resolve the game.", renderAdminControls(), `Overseer control · ${OVERSEER_NAME}`)}${card("Participant origins", "Registration totals grouped by where participants are from.", `<div class="table-balance-list">${renderOrigins()}</div>`, "Live registry")}</section>${card("Full game roster", "Attendance, origin, roles and power availability.", renderRoster(), "Council registry")}</div>`;
   }
 
   function render() {
@@ -353,11 +394,11 @@
     if (state.attendanceLocked) return setMessage("Registration has been locked by the Overseer.");
     const data = new FormData(form);
     const name = String(data.get("name") || "").trim();
-    const table = Number(data.get("table"));
-    if (!name || !table) return;
-    if (state.publicRoster.some((player) => player.name.toLowerCase() === name.toLowerCase() && player.table === table)) return setMessage("That name is already registered at this table.");
+    const origin = String(data.get("origin") || "").trim();
+    if (!name || !origin) return;
+    if (state.publicRoster.some((player) => player.name.toLowerCase() === name.toLowerCase() && String(player.origin || "").toLowerCase() === origin.toLowerCase())) return setMessage("That participant is already registered.");
     const id = firebaseConfigured && state.session ? state.session.localId : makeId();
-    const player = { id, name, table, present: false, revealed: false, status: "ACTIVE" };
+    const player = { id, name, origin, present: false, revealed: false, status: "ACTIVE" };
     try {
       if (firebaseConfigured) {
         if (!state.session || isOverseerSession(state.session)) throw new Error("Participant connection is not ready. Refresh the page.");
@@ -367,7 +408,7 @@
       state.selectedPlayerId = id;
       setMessage("Registration received. Awaiting attendance confirmation.");
       commit();
-    } catch (error) { setMessage(error.message || "Registration failed."); }
+    } catch (error) { setMessage(friendlyFirebaseError(error)); }
   }
 
   async function loginAdmin(form) {
@@ -384,7 +425,13 @@
       state.adminUnlocked = true;
       setMessage(`Overseer access granted to ${OVERSEER_NAME}.`);
       render();
-    } catch (error) { setMessage(String(error.message || "Overseer login failed.").replaceAll("_", " ")); }
+    } catch (error) {
+      if (state.session && isOverseerSession(state.session)) {
+        state.session = readSession();
+        state.liveConnected = false;
+      }
+      setMessage(friendlyFirebaseError(error, "overseer"));
+    }
   }
 
   async function updateAttendance(id, present) {
@@ -402,7 +449,7 @@
   async function lockAttendance() {
     const present = presentPlayers();
     if (present.length < G.MINIMUM_PLAYERS) return setMessage(`Confirm at least ${G.MINIMUM_PLAYERS} attendees first.`);
-    if (!G.allocateShadows(present)) return setMessage("These table sizes cannot hold 10 Shadows while keeping a Council majority.");
+    if (!G.allocateShadows(present)) return setMessage(`At least ${G.SHADOW_COUNT * 2 + 1} attendees are required for ${G.SHADOW_COUNT} Shadows and a Council majority.`);
     state.attendanceLocked = true;
     setMessage(`Attendance locked at ${present.length}. Every attendee enters the same fair draw.`);
     commit();
@@ -412,9 +459,9 @@
   async function assignRoles() {
     if (!confirm("Assign all roles, missions and Shadow teammates now?")) return;
     const players = G.assignAllRoles(state.players);
-    if (!players) return setMessage("Role assignment could not preserve a Council majority at every table.");
+    if (!players) return setMessage("Role assignment needs more confirmed Council members.");
     Object.assign(state, { players, rolesAssigned: true, phase: "KULIAH", round: 1, winner: null, phaseEndsAt: null, lastResult: "Roles assigned. KULIAH Round 1 has begun.", votes: {}, nightActions: {}, missionClaims: {} });
-    setMessage(`Roles assigned: 10 Shadows and ${presentPlayers().length - G.SHADOW_COUNT} Council members.`);
+    setMessage(`Roles assigned: ${G.SHADOW_COUNT} Shadows and ${presentPlayers().length - G.SHADOW_COUNT} Council members.`);
     commit();
     try { await saveGame({ players, rolesAssigned: true, phase: "KULIAH", round: 1, winner: null, phaseEndsAt: null, lastResult: state.lastResult, votes: {}, nightActions: {}, missionClaims: {} }); } catch { setMessage("Firebase did not save the role assignment."); }
   }
@@ -492,10 +539,28 @@
   }
 
   function loadDemo() {
-    state.players = G.TABLES.flatMap((table) => Array.from({ length: 7 }, (_, index) => ({ id: makeId(), name: `Participant ${String((table - 1) * 7 + index + 1).padStart(2, "0")}`, table, present: false, revealed: false, status: "ACTIVE" })));
+    const origins = ["BERLIAN SARAWAK", "UiTM SARAWAK", "RAKAN MUDA", "MPBN KUCHING", "BELIA MUKAH"];
+    state.players = Array.from({ length: 35 }, (_, index) => ({ id: makeId(), name: `Participant ${String(index + 1).padStart(2, "0")}`, origin: origins[index % origins.length], present: false, revealed: false, status: "ACTIVE" }));
     Object.assign(state, { attendanceLocked: false, rolesAssigned: false, phase: "REGISTRATION", round: 1, winner: null, phaseEndsAt: null, lastResult: EMPTY_RESULT, votes: {}, nightActions: {}, missionClaims: {}, selectedPlayerId: state.players[0].id });
     setMessage("35 demo participants loaded.");
     commit();
+  }
+
+  function downloadParticipantList() {
+    if (!state.players.length) return setMessage("There are no participants to download yet.");
+    const csvCell = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const sorted = state.players.slice().sort((a, b) => String(a.origin || "").localeCompare(String(b.origin || "")) || a.name.localeCompare(b.name));
+    const rows = [["No.", "Participant name", "Where from", "Attendance"], ...sorted.map((player, index) => [index + 1, player.name, player.origin || "Not provided", player.present ? "Present" : "Pending"])];
+    const csv = `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `majlis-bayangan-participants-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setMessage("Participant list downloaded.");
   }
 
   async function permanentReset() {
@@ -508,12 +573,31 @@
 
   document.addEventListener("click", async (event) => {
     const tab = event.target.closest("[data-tab]");
-    if (tab) { state.currentTab = tab.dataset.tab; render(); return; }
+    if (tab) {
+      if (tab.dataset.tab === "participant" && state.adminUnlocked && firebaseConfigured) {
+        state.adminUnlocked = false;
+        state.session = readSession() || await signInAnonymous();
+        await syncLive().catch((error) => setMessage(friendlyFirebaseError(error)));
+      }
+      state.currentTab = tab.dataset.tab;
+      render();
+      return;
+    }
     const phase = event.target.closest("[data-phase]");
     if (phase) { await startPhase(phase.dataset.phase); return; }
     const button = event.target.closest("[data-action]");
     if (!button) return;
     const action = button.dataset.action;
+    if (action === "toggle-password") {
+      const input = document.getElementById("overseer-password");
+      if (input) {
+        const reveal = input.type === "password";
+        input.type = reveal ? "text" : "password";
+        button.textContent = reveal ? "HIDE" : "SHOW";
+        button.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
+      }
+      return;
+    }
     if (action === "reveal-role") { const player = selectedPlayer(); if (player) state.revealedIds.add(player.id); render(); }
     if (action === "complete-mission") await completeMission();
     if (action === "submit-vote") await submitVote();
@@ -523,6 +607,7 @@
     if (action === "assign-roles") await assignRoles();
     if (action === "resolve-night") await resolveKudeta();
     if (action === "resolve-vote") await resolveVote();
+    if (action === "download-participants") downloadParticipantList();
     if (action === "load-demo") loadDemo();
     if (action === "open-reset") resetOne.showModal();
   });
@@ -561,7 +646,7 @@
       await syncLive();
     } catch (error) {
       state.liveConnected = false;
-      setMessage(error.message || "Could not connect to Firebase.");
+      setMessage(friendlyFirebaseError(error));
       render();
     }
   }
