@@ -168,6 +168,14 @@
     state.publicRoster = (gamePublic && gamePublic.roster) || [];
   }
 
+  function shouldDeferLiveRender() {
+    const active = document.activeElement;
+    const activelyEditing = Boolean(active && app.contains(active) && active.matches('input:not([readonly]):not([type="checkbox"]), select, textarea'));
+    const draftFields = app.querySelectorAll('#registration-form input:not([readonly]):not([type="checkbox"]), #registration-form select, #admin-login-form input[name="password"]');
+    const hasDraft = [...draftFields].some((field) => String(field.value || "").trim().length > 0);
+    return activelyEditing || hasDraft;
+  }
+
   async function syncLive() {
     if (!state.session) return;
     if (isOverseerSession(state.session)) {
@@ -193,7 +201,8 @@
     }
     state.liveConnected = true;
     state.lastSyncedAt = Date.now();
-    render();
+    if (shouldDeferLiveRender()) renderHeader();
+    else render();
   }
 
   async function saveGame(options = {}) {
