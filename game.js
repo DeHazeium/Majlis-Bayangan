@@ -2,9 +2,8 @@
   "use strict";
 
   const TARGET_COUNT = 35;
-  const SHADOW_COUNT = 10;
+  const SHADOW_COUNT = 6;
   const MINIMUM_PLAYERS = 21;
-  const TABLES = [1, 2, 3, 4, 5];
 
   const roleCopy = {
     "MAJLIS BAYANGAN": { faction: "Majlis Bayangan", brief: "Blend in, complete your hidden operation and protect the Shadow Council.", power: "During KUDETA, secretly vote to silence one active Council member." },
@@ -68,21 +67,15 @@
   }
 
   function allocateShadows(players) {
-    const groups = TABLES.map((table) => ({ table, members: players.filter((player) => player.table === table), shadows: 0 })).filter((group) => group.members.length > 0);
-    for (let index = 0; index < SHADOW_COUNT; index += 1) {
-      const eligible = groups.filter((group) => group.shadows < Math.floor((group.members.length - 1) / 2)).sort((a, b) => a.shadows / a.members.length - b.shadows / b.members.length || b.members.length - a.members.length || a.table - b.table);
-      if (!eligible[0]) return null;
-      eligible[0].shadows += 1;
-    }
-    return groups;
+    if (players.length <= SHADOW_COUNT * 2) return null;
+    return shuffle(players).slice(0, SHADOW_COUNT);
   }
 
   function assignAllRoles(players) {
     const present = players.filter((player) => player.present);
-    const allocations = allocateShadows(present);
-    if (!allocations) return null;
-    const shadowIds = new Set();
-    allocations.forEach((group) => shuffle(group.members).slice(0, group.shadows).forEach((player) => shadowIds.add(player.id)));
+    const shadows = allocateShadows(present);
+    if (!shadows) return null;
+    const shadowIds = new Set(shadows.map((player) => player.id));
     const blockerId = shuffle([...shadowIds])[0];
     const council = shuffle(present.filter((player) => !shadowIds.has(player.id)));
     const investigators = new Set(council.slice(0, 3).map((player) => player.id));
@@ -178,10 +171,9 @@
       presentCount: present.length,
       shadowCount: active.filter((player) => player.faction === "SHADOW").length,
       councilCount: active.filter((player) => player.faction === "COUNCIL").length,
-      roster: present.map(({ id, name, table, status, present: isPresent }) => ({ id, name, table, status, present: isPresent }))
+      roster: present.map(({ id, name, origin, status, present: isPresent }) => ({ id, name, origin, status, present: isPresent }))
     };
   }
 
-  window.MBGame = { TARGET_COUNT, SHADOW_COUNT, MINIMUM_PLAYERS, TABLES, roleCopy, allocateShadows, assignAllRoles, evaluateWinner, resolveNight, resolveConsensus, makePublicState };
+  window.MBGame = { TARGET_COUNT, SHADOW_COUNT, MINIMUM_PLAYERS, roleCopy, allocateShadows, assignAllRoles, evaluateWinner, resolveNight, resolveConsensus, makePublicState };
 })();
-
